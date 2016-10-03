@@ -1,0 +1,165 @@
+---
+title: "Practical Machine Learning Final Project"
+author: "Mark H."
+date: "October 2, 2016"
+output: html_document
+---
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. 
+
+## Task
+
+For this project, six participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. Data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants were recorded and provided as part of the project. 
+
+The goal of the project is to predict the manner in which the participants did the exercise. This is the **"classe"** variable in the training set. 
+
+## Data
+
+The training data (containing participant activities and corresponding **classe**) for this project are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test (containig participant activities but without **classe** code) data are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+Physical activity data from participants originated from 
+http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## Approach
+
+The general approach for this project is to rely heavily on the training data set as base for training as well as cross validating regression models. The best performing model would then be relied upon to predict values currently missing from a test data set. 
+
+In order to do so, the project first splits training the data set to two parts (70/30 split). The large data set (trainingSet) will be used to train/fit R models. 
+
+The trained models will then attempt to predict the **classe** value of the remaining smaller data set (validateSet). The predicted values will be cross validated with the actual value to determine the accuracy of the selected prediction model.
+
+The project will then apply the better performing model from above to the blind data set (blindSet) and forecast the missing **classe** variable for each of the 20 measurement sets.
+
+
+## Process
+
+### Load Libraries
+```{r load_packages, results="hide"}
+library(caret)
+library(randomForest)
+library(gbm)
+library(plyr)
+library(rpart) 
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+```
+
+### Extract Data
+
+Importing data from sources. the Testing set
+
+```{r}
+trainSRC <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+training <- read.csv(url(trainSRC), na.strings=c("NA","#DIV/0!",""))
+
+blindSRC <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+blindSet <- read.csv(url(blindSRC), na.strings=c("NA","#DIV/0!",""))
+```
+
+### Create Training and Validation Set
+
+Partition Training Data set to larger "trainingSet" and smaller "validateSet"
+
+```{r}
+inTrain <- createDataPartition(y=training$classe, p=0.7, list=FALSE)
+
+trainingSet <- training[inTrain, ]
+dim(trainingSet)
+
+validateSet <- training[-inTrain, ]
+dim(validateSet)
+```
+
+### Transform Data
+
+Attempt to remove parts of the data set that are most likely weak as predictor. This is done by removing data columns that contain values that lack variance (data that are mostly homogeneous) OR contain largely incomplete data. 
+
+```{r}
+## Remove near zero variance columns
+myDataNZV <- nearZeroVar(trainingSet, saveMetrics=TRUE)
+myNZVvars2 <- rownames(myDataNZV[myDataNZV$nzv==FALSE,])
+trainingSet <- subset(trainingSet, select=c(myNZVvars2))
+trainingSet <- trainingSet[c(-1)]
+
+
+## Remove columns with 80% or more 'na' data 
+dummyDF <- 1 #create a dummy variable here to make append easier
+for(i in 1:length(trainingSet)) { 
+  if( sum( !is.na( trainingSet[i] ) ) /nrow(trainingSet) >= .8 ) {  
+    if(is.data.frame(dummyDF))
+      {dummyDF <- data.frame(dummyDF,trainingSet[i])}
+    else
+      {dummyDF <- data.frame(trainingSet[i])}
+  }
+}
+
+summary(dummyDF)
+trainingSet <- dummyDF
+rm(dummyDF)
+
+##also apply the right set of columns to training and incomoplete
+usefulCols <- colnames(trainingSet)
+validateSet <- validateSet[usefulCols]
+usefulCols2 <- colnames(trainingSet[, -58]) #incomplete set is one classe column fewer
+blindSet <- blindSet[usefulCols2]
+
+##column count should match between training and validate. Incomplete set is missing classe
+dim(trainingSet)
+dim(validateSet)
+dim(blindSet)
+
+##force match data column class
+for (i in 1:length(blindSet) ) {
+  for(j in 1:length(trainingSet)) {
+    if( length( grep(names(trainingSet[i]), names(blindSet)[j]) ) ==1)  {
+      class(blindSet[j]) <- class(trainingSet[i])
+    }      
+  }      
+}
+
+blindSet <- rbind(trainingSet[2, -58] , blindSet)
+blindSet <- blindSet[-1,]
+
+```
+
+### Apply and Cross validate Machine Learning Algorithms
+
+```{r}
+####Decision Tree Model
+modelRP <- rpart(classe ~ ., data=trainingSet, method="class")
+predictRP <- predict(modelRP, validateSet, type = "class")
+confusionMatrix(predictRP, validateSet$classe)
+```
+
+```{r}
+####Random Forest Model
+modelRF <- randomForest(classe ~. , data=trainingSet)
+predictRF <- predict(modelRF, validateSet, type = "class")
+confusionMatrix(predictRF, validateSet$classe)
+```
+
+```{r}
+####Gradient Boosting Model
+#modelGBM <- train(classe ~ ., method="gbm", data=trainingSet, verbose = FALSE)
+#predictGBM <- predict(modelGBM, validateSet, type = "class")
+#confusionMatrix(predictGBM, validateSet$classe)
+```
+Unable to complete GBM after 1+ hour runtime, therefore the model was disabled. 
+
+Between the two remaining models, Random Tree netted results with higher accuracy, and it will be the model applied to the blind data set.
+
+### Apply Best Model to Blind Data set
+
+Predict ***classe*** values in blind set
+
+```{r}
+prediction.blind <- predict(modelRF, blindSet, type = "class")
+prediction.blind
+```
